@@ -5,8 +5,11 @@ from datetime import datetime, timedelta, time
 from mongoengine import Document, StringField, IntField, DateTimeField, FloatField, connect, IndexModel, signals
 
 # --- Configuration ---
-MONGO_URI = "mongodb://username:password@localhost:27017/yourdb"
-DB_NAME = "yourdb"
+# MongoDB connection for the dockerised MongoDB instance running on localhost.
+# The container exposes port 27017 and a user `appuser` with password `appuser`
+# on the `yfinance` database.
+MONGO_URI = "mongodb://appuser:appuser@localhost:27017/yfinance"
+DB_NAME = "yfinance"
 COLLECTION = "minute_bars"
 
 # Market timezone
