@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import pytz
 from datetime import datetime, timedelta, time
-from mongoengine import Document, StringField, IntField, DateTimeField, FloatField, connect, IndexModel, signals
+from mongoengine import Document, StringField, IntField, DateTimeField, FloatField, connect, signals
 
 # --- Configuration ---
 # MongoDB connection for the dockerised MongoDB instance running on localhost.
@@ -20,8 +20,12 @@ MARKET_CLOSE = time(16, 0)
 # Number of minutes in regular session: 6.5 hours * 60 = 390
 MAX_MINUTES = 390
 
-# Example ticker list (replace with full QQQ constituents)
-TICKERS = ["AAPL", "MSFT", "GOOGL", "..."]  # ~100 tickers
+# Load tickers from tickers.csv
+import csv
+with open('tickers.csv', 'r') as f:
+    csv_reader = csv.DictReader(f)
+    TICKERS = [row['ticker'] for row in csv_reader]
+print(f"Loaded {len(TICKERS)} tickers from tickers.csv")
 
 # --- MongoEngine model ---
 class MinuteBar(Document):
@@ -95,10 +99,36 @@ def fetch_and_store_ticker(ticker: str, period: str = "7d", interval: str = "1m"
         except Exception as ex:
             print(f"Insert error for {ticker}: {ex}")
 
+# --- Check if ticker has data ---
+def ticker_has_data(ticker: str, date_str: str) -> bool:
+    return MinuteBar.objects(ticker=ticker, date=date_str).count() > 0
+
 # --- Backfill all tickers ---
-def backfill_all():
-    for ticker in TICKERS:
-        fetch_and_store_ticker(ticker, period="7d", interval="1m")
+def backfill_all(force_update=False):
+    # Get today's date in ET
+    et_now = datetime.now(ET)
+    today_str = et_now.date().isoformat()
+    
+    # Load tickers from CSV with pandas to handle the QQQ_holding column
+    df = pd.read_csv('tickers.csv')
+    tickers_to_process = df['ticker'].tolist()
+    
+    print(f"Processing {len(tickers_to_process)} tickers...")
+    
+    for ticker in tickers_to_process:
+        # Skip if data exists and force_update is False
+        if not force_update and ticker_has_data(ticker, today_str):
+            print(f"Skipping {ticker} - data already exists for {today_str}")
+            continue
+            
+        # Special handling for VIX (use ^VIX)
+        if ticker == "VIX":
+            actual_ticker = "^VIX"
+        else:
+            actual_ticker = ticker
+            
+        print(f"Fetching {ticker} data...")
+        fetch_and_store_ticker(actual_ticker, period="7d", interval="1m")
 
 # --- Live capture (for current trading day) ---
 def capture_live_minute(tickers):
