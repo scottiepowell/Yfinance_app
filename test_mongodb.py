@@ -1,14 +1,20 @@
-from mongoengine import connect, disconnect
-from main import DB_NAME, MONGO_URI, MinuteBar
+from datetime import datetime
+
+from mongoengine import disconnect
+from mongoengine.connection import get_connection
+
+from db import DB_NAME, MONGO_URI, init_db_connection
+from models import MinuteBar
 
 def test_mongodb_connection():
     print("Testing MongoDB connection...")
     try:
         # Ensure we're starting fresh
         disconnect()
-        
+
         # Try to connect
-        conn = connect(db=DB_NAME, host=MONGO_URI)
+        init_db_connection()
+        conn = get_connection()
         
         # Simple write test
         test_doc = MinuteBar(
@@ -40,6 +46,5 @@ def test_mongodb_connection():
         return False
 
 if __name__ == "__main__":
-    from datetime import datetime
     success = test_mongodb_connection()
     exit(0 if success else 1)

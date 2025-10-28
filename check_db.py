@@ -1,9 +1,9 @@
-from mongoengine import connect
-from main import MinuteBar, DB_NAME, MONGO_URI
+from db import DB_NAME, MONGO_URI, init_db_connection
+from models import MinuteBar
 
 def check_db_stats():
     # Connect to MongoDB
-    connect(db=DB_NAME, host=MONGO_URI)
+    init_db_connection()
     
     # Get total number of documents
     total_docs = MinuteBar.objects.count()
