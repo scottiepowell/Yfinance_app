@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
+import statsmodels.api as sm
 
 from db import init_db_connection
 from models import MinuteBar
@@ -51,6 +52,23 @@ def _load_qqq_holdings(
     return tickers.tolist()
 
 
+def _load_allocation_weights(tickers: Iterable[str]) -> Dict[str, float]:
+    """Return allocation weights for the requested tickers."""
+
+    df = pd.read_csv("tickers.csv")
+    allocation = (
+        pd.to_numeric(df["allocation_percentage"].astype(str).str.rstrip("%"), errors="coerce")
+        .fillna(0.0)
+        / 100.0
+    )
+    df = df.assign(_allocation=allocation)
+    tickers_set = set(tickers)
+    weights: Dict[str, float] = {}
+    for _, row in df.loc[df["ticker"].isin(tickers_set)].iterrows():
+        weights[row["ticker"]] = float(row["_allocation"])
+    return weights
+
+
 def _query_minute_bars(tickers: Iterable[str], date: str) -> pd.DataFrame:
     """Fetch minute bar data for the supplied tickers and date."""
 
@@ -76,26 +94,31 @@ def _query_minute_bars(tickers: Iterable[str], date: str) -> pd.DataFrame:
 def minute_top10_holdings_to_qqq_prediction(date: str, top_n: int = 10) -> pd.DataFrame:
     """
     Build a DataFrame of features from the top N holdings' 1-minute price changes
-    with the target being the next-minute price change of QQQ.
+    along with SPY and VIX, with the target being the next-minute price change of QQQ.
 
     For each minute t:
-      - For each of the top N holdings by allocation, compute ΔClose_t = Close_t − Open_t.
+      - For each of the top N holdings by allocation plus SPY and VIX, compute ΔClose_t = Close_t − Open_t.
       - Use these Δs at minute t as predictor features.
       - Use the ΔPrice of QQQ at minute t+1 as the target variable.
 
     Returns a DataFrame with one row per minute_index containing columns
-    holding_<ticker>_chg and target_qqq_change.
+    holding_<ticker>_chg and target_qqq_change_t+1.
     """
 
     if top_n <= 0:
         raise ValueError("top_n must be a positive integer")
 
     holdings = _load_qqq_holdings(top_n=top_n, sort_by_allocation=True)
-    holdings_df = _query_minute_bars(holdings, date)
+    holdings_extended = list(holdings)
+    for ticker in ("SPY", "VIX"):
+        if ticker not in holdings_extended:
+            holdings_extended.append(ticker)
+
+    holdings_df = _query_minute_bars(holdings_extended, date)
     qqq_df = _query_minute_bars(["QQQ"], date)
 
     if holdings_df.empty:
-        raise ValueError(f"No minute bar data found for top holdings on {date}")
+        raise ValueError(f"No minute bar data found for top holdings/SPY/VIX on {date}")
     if qqq_df.empty:
         raise ValueError(f"No minute bar data found for QQQ on {date}")
 
@@ -107,10 +130,59 @@ def minute_top10_holdings_to_qqq_prediction(date: str, top_n: int = 10) -> pd.Da
     qqq_by_minute = qqq_df.set_index("minute_index")["qqq_change"]
 
     df = pivot.copy()
-    df["target_qqq_change"] = qqq_by_minute.shift(-1)
-    df = df.dropna(subset=["target_qqq_change"])
+    df["target_qqq_change_t+1"] = qqq_by_minute.shift(-1)
+    df = df.dropna(subset=["target_qqq_change_t+1"])
 
     return df
+
+
+def analyze_prediction_regression(
+    df: pd.DataFrame, allocation_overrides: Optional[Dict[str, float]] = None
+) -> Dict[str, Any]:
+    """
+    Analyse the relationship between holding-level minute changes and the next-minute
+    QQQ change via a weighted aggregate feature, Pearson correlation and OLS regression.
+
+    SPY and VIX are assigned zero weights by default. Allocation percentages are
+    sourced from tickers.csv unless overridden via ``allocation_overrides``.
+    """
+
+    if df.empty:
+        raise ValueError("Prediction DataFrame is empty; cannot run regression analysis")
+
+    target_column = "target_qqq_change_t+1"
+    holding_cols = [
+        col for col in df.columns if col.startswith("holding_") and col != target_column
+    ]
+
+    tickers = [col.replace("holding_", "").replace("_chg", "") for col in holding_cols]
+    weights = _load_allocation_weights(tickers)
+    for ticker in ("SPY", "VIX"):
+        weights.setdefault(ticker, 0.0)
+    if allocation_overrides:
+        weights.update(allocation_overrides)
+
+    regression_df = df[holding_cols + [target_column]].dropna()
+    if regression_df.empty:
+        raise ValueError("No complete rows available for regression after dropping NaNs")
+
+    weighted_sum = sum(
+        regression_df[col]
+        * weights.get(col.replace("holding_", "").replace("_chg", ""), 0.0)
+        for col in holding_cols
+    )
+    correlation = float(weighted_sum.corr(regression_df[target_column]))
+
+    X = sm.add_constant(regression_df[holding_cols], has_constant="add")
+    y = regression_df[target_column]
+    model = sm.OLS(y, X).fit()
+
+    return {
+        "correlation": correlation,
+        "model": model,
+        "summary": model.summary(),
+        "weights": weights,
+    }
 
 
 def list_available_dates() -> List[str]:
@@ -226,6 +298,13 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--analyze-regression",
+        action="store_true",
+        help=(
+            "Compute correlation and run an OLS regression using the minute prediction dataset"
+        ),
+    )
+    parser.add_argument(
         "--top-n",
         type=int,
         default=10,
@@ -257,13 +336,24 @@ def main() -> None:
     print("\n" + "-" * 80 + "\n")
     print(_format_result(price_change_result, "Price change comparison"))
 
-    if args.include_prediction:
+    if args.include_prediction or args.analyze_regression:
         prediction_df = minute_top10_holdings_to_qqq_prediction(args.date, top_n=args.top_n)
-        print("\n" + "-" * 80 + "\n")
-        print(
-            "Top holdings minute-change features vs. next-minute QQQ change:\n"
-            + prediction_df.to_string()
-        )
+
+        if args.include_prediction:
+            print("\n" + "-" * 80 + "\n")
+            print(
+                "Top holdings minute-change features vs. next-minute QQQ change:\n"
+                + prediction_df.to_string()
+            )
+
+        if args.analyze_regression:
+            analysis = analyze_prediction_regression(prediction_df)
+            print("\n" + "-" * 80 + "\n")
+            print(
+                "Pearson correlation (weighted holdings vs. next-minute QQQ): "
+                f"{analysis['correlation']:.6f}"
+            )
+            print(analysis["summary"])
 
 
 if __name__ == "__main__":
