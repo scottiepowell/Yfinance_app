@@ -2,14 +2,13 @@ import yfinance as yf
 import pandas as pd
 import pytz
 from datetime import datetime, timedelta, time
-from mongoengine import Document, StringField, IntField, DateTimeField, FloatField, connect, signals
+from mongoengine import signals
+
+from db import DB_NAME, MONGO_URI, init_db_connection
+from models import MinuteBar
 
 # --- Configuration ---
-# MongoDB connection for the dockerised MongoDB instance running on localhost.
-# The container exposes port 27017 and a user `appuser` with password `appuser`
-# on the `yfinance` database.
-MONGO_URI = "mongodb://appuser:appuser@localhost:27017/yfinance"
-DB_NAME = "yfinance"
+# MongoDB connection constants are defined in db.py and imported above.
 COLLECTION = "minute_bars"
 
 # Market timezone
@@ -27,26 +26,8 @@ with open('tickers.csv', 'r') as f:
     TICKERS = [row['ticker'] for row in csv_reader]
 print(f"Loaded {len(TICKERS)} tickers from tickers.csv")
 
-# --- MongoEngine model ---
-class MinuteBar(Document):
-    meta = {
-        'collection': COLLECTION,
-        'indexes': [
-            {'fields': ('ticker', 'date', 'minute_index'), 'unique': True}
-        ]
-    }
-    ticker = StringField(required=True)
-    date = StringField(required=True)              # e.g., '2025-10-24'
-    minute_index = IntField(required=True)         # 1 = 9:30, etc.
-    timestamp = DateTimeField(required=True)       # actual datetime
-    open = FloatField()
-    high = FloatField()
-    low = FloatField()
-    close = FloatField()
-    volume = IntField()
-
 # --- Connect to DB ---
-connect(db=DB_NAME, host=MONGO_URI)
+init_db_connection()
 
 # --- Utility to compute minute_index ---
 def compute_minute_index(ts: datetime) -> int:
