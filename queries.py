@@ -54,16 +54,6 @@ def _query_minute_bars(tickers: Iterable[str], date: str) -> pd.DataFrame:
     return pd.DataFrame(records, columns=columns)
 
 
-def list_available_dates() -> List[str]:
-    """Return sorted trading dates with both QQQ and holdings data available."""
-
-    holdings = _load_qqq_holdings()
-    qqq_dates = set(MinuteBar.objects(ticker="QQQ").distinct("date"))
-    holdings_dates = set(MinuteBar.objects(ticker__in=list(holdings)).distinct("date"))
-    available = sorted(qqq_dates & holdings_dates)
-    return available
-
-
 def _build_totals_dataframe(**totals: float) -> pd.DataFrame:
     """Return a single-row DataFrame from keyword totals."""
 
@@ -150,36 +140,22 @@ def _format_result(result: ComparisonResult, heading: str) -> str:
     return "\n".join(parts)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Compare QQQ ETF against aggregated holdings data")
-    parser.add_argument("date", nargs="?", help="Trading day to query (YYYY-MM-DD)")
-    parser.add_argument(
-        "--list-dates",
-        action="store_true",
-        help="List trading dates that can be supplied to the positional date argument",
-    )
-    args = parser.parse_args()
+def _run_cli(date: str) -> None:
+    """Execute both comparisons and print the results."""
 
-    if args.list_dates:
-        dates = list_available_dates()
-        if dates:
-            print("Available trading dates:")
-            for trading_date in dates:
-                print(f" - {trading_date}")
-        else:
-            print("No trading dates found in the database for QQQ and its holdings.")
-        if args.date is None:
-            return
-
-    if args.date is None:
-        parser.error("the following arguments are required: date")
-
-    volume_result = minute_volume_comparison(args.date)
-    price_change_result = minute_price_change_comparison(args.date)
+    volume_result = minute_volume_comparison(date)
+    price_change_result = minute_price_change_comparison(date)
 
     print(_format_result(volume_result, "Volume comparison"))
     print("\n" + "-" * 80 + "\n")
     print(_format_result(price_change_result, "Price change comparison"))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Compare QQQ ETF against aggregated holdings data")
+    parser.add_argument("date", help="Trading day to query (YYYY-MM-DD)")
+    args = parser.parse_args()
+    _run_cli(args.date)
 
 
 if __name__ == "__main__":
